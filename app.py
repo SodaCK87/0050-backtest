@@ -323,5 +323,5 @@ for i, (name, desc) in enumerate(trader_info.items()):
         st.info(f"**{name}**\n\n{desc}")
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"數據來源: 0050.TW 還原股價（Adj. Close）{start_date[:4]}年 至 {end_date}")
+st.sidebar.caption(f"數據來源: 0050.TW 還原股價（Adj. Close）{start_date_str[:4]}年 至 {end_date_str}")
 st.sidebar.caption("交易成本: 0.1425% 手續費 / 0.1% ETF 交易稅")
