@@ -103,23 +103,37 @@ payday = st.sidebar.slider("發薪日 (每月)", 1, 28, 5, help="每個月資金
 bs_threshold = st.sidebar.slider("黑天鵝觸發門檻 (%)", 1, 50, 10, help="價格從歷史高點回落多少百分比時觸發大舉買入") / 100
 
 with st.spinner("回測計算中，請稍候..."):
-    engine = BacktestEngine(
-        csv_file, 
-        monthly_salary=salary, 
-        payday=payday, 
-        black_swan_threshold=bs_threshold,
-        start_date=date_range[0],
-        end_date=date_range[1]
-    )
-    all_results = engine.run_all()
-dates = engine.df['Date'].dt.strftime('%Y年%m月%d日')
+    # Defensive check for slider output
+    if isinstance(date_range, (list, tuple)) and len(date_range) >= 2:
+        s_dt, e_dt = date_range[0], date_range[1]
+    else:
+        s_dt, e_dt = min_dt, max_dt
 
-start_date = engine.df['Date'].iloc[0].strftime('%Y年%m月%d日')
-end_date = engine.df['Date'].iloc[-1].strftime('%Y年%m月%d日')
+    try:
+        engine = BacktestEngine(
+            csv_file, 
+            monthly_salary=salary, 
+            payday=payday, 
+            black_swan_threshold=bs_threshold,
+            start_date=s_dt,
+            end_date=e_dt
+        )
+        all_results = engine.run_all()
+    except TypeError as e:
+        st.error(f"⚠️ 回測引擎啟動失敗。請確認 backtest_engine.py 是否已更新至最新版本。錯誤訊息: {e}")
+        st.stop()
+
+if engine.df.empty:
+    st.warning("⚠️ 所選日期區間內無交易數據，請重新選擇範圍。")
+    st.stop()
+
+dates = engine.df['Date'].dt.strftime('%Y年%m月%d日')
+start_date_str = engine.df['Date'].iloc[0].strftime('%Y年%m月%d日')
+end_date_str = engine.df['Date'].iloc[-1].strftime('%Y年%m月%d日')
 
 # Summary Metrics
 st.subheader("📊 績效總覽 (Performance Summary)")
-st.markdown(f"**回測期間：** `{start_date}` 至 `{end_date}`")
+st.markdown(f"**回測期間：** `{start_date_str}` 至 `{end_date_str}`")
 
 # Determine the winner based on best ROI
 best_roi = max(res['metrics']['ROI'] for res in all_results.values())
