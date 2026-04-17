@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 class BacktestEngine:
-    def __init__(self, csv_path, monthly_salary=30000, payday=5, black_swan_threshold=0.2):
+    def __init__(self, csv_path, monthly_salary=30000, payday=5, black_swan_threshold=0.2, start_date=None, end_date=None):
         self.csv_path = csv_path
         self.salary = monthly_salary
         self.payday = payday
@@ -15,8 +15,17 @@ class BacktestEngine:
         self.df['Date'] = pd.to_datetime(self.df['Date'])
         self.df = self.df.sort_values('Date').reset_index(drop=True)
         
-        # Pre-calculate Indicators & Paydays (compute once, reuse)
+        # Pre-calculate Indicators
         self._calculate_indicators()
+        
+        # Filter by date range AFTER calculation to preserve Moving Average / Indicator warm-up
+        if start_date:
+            self.df = self.df[self.df['Date'] >= pd.to_datetime(start_date)]
+        if end_date:
+            self.df = self.df[self.df['Date'] <= pd.to_datetime(end_date)]
+        self.df = self.df.reset_index(drop=True)
+        
+        # Then compute paydays on the filtered data
         self._paydays = self._compute_paydays()
     
     def _calculate_indicators(self):
@@ -72,14 +81,14 @@ class BacktestEngine:
         current_month = -1
         paid_this_month = False
         
-        for i, row in self.df.iterrows():
-            month = row['Date'].month
+        for row in self.df.itertuples():
+            month = row.Date.month
             if month != current_month:
                 current_month = month
                 paid_this_month = False
             
-            if not paid_this_month and row['Date'].day >= self.payday:
-                paydays.append(i)
+            if not paid_this_month and row.Date.day >= self.payday:
+                paydays.append(row.Index)
                 paid_this_month = True
         return paydays
 
@@ -142,13 +151,15 @@ class BacktestEngine:
         shares_curve = []
         cash_curve = []
         
-        for i, row in self.df.iterrows():
+        for row in self.df.itertuples():
+            i = row.Index
+            close_price = row.Close
             if i in paydays_set:
                 cash += self.salary
                 total_invested += self.salary
-                cash, shares = self._execute_buy(cash, shares, row['Close'], cash)
+                cash, shares = self._execute_buy(cash, shares, close_price, cash)
             
-            equity = cash + shares * row['Close']
+            equity = cash + shares * close_price
             equity_curve.append(equity)
             shares_curve.append(shares)
             cash_curve.append(cash)
@@ -166,27 +177,30 @@ class BacktestEngine:
         shares_curve = []
         cash_curve = []
         
-        for i, row in self.df.iterrows():
+        for row in self.df.itertuples():
+            i = row.Index
+            close_price = row.Close
+            open_price = row.Open
             if i in paydays_set:
                 cash += self.salary
                 total_invested += self.salary
                 # Buy 50% immediately
                 amount = self.salary * 0.5
-                cash, shares = self._execute_buy(cash, shares, row['Close'], amount)
+                cash, shares = self._execute_buy(cash, shares, close_price, amount)
                 # FIX Bug 4: += to accumulate, not overwrite previous month's unspent half
                 pending_half += self.salary * 0.5
             
             # Check for "Down Day" (Close < Open) for the pending amount
             if pending_half > 0:
-                if row['Close'] < row['Open']:
-                    cash, shares = self._execute_buy(cash, shares, row['Close'], pending_half)
+                if close_price < open_price:
+                    cash, shares = self._execute_buy(cash, shares, close_price, pending_half)
                     pending_half = 0
-                elif i + 1 < len(self.df) and self.df.iloc[i+1]['Date'].month != row['Date'].month:
+                elif i + 1 < len(self.df) and self.df.at[i+1, 'Date'].month != row.Date.month:
                     # Last day of month, buy anyway
-                    cash, shares = self._execute_buy(cash, shares, row['Close'], pending_half)
+                    cash, shares = self._execute_buy(cash, shares, close_price, pending_half)
                     pending_half = 0
                     
-            equity = cash + shares * row['Close']
+            equity = cash + shares * close_price
             equity_curve.append(equity)
             shares_curve.append(shares)
             cash_curve.append(cash)
@@ -204,29 +218,36 @@ class BacktestEngine:
         shares_curve = []
         cash_curve = []
         
-        for i, row in self.df.iterrows():
+        # Pre-fetch Close prices into array for fast multi-day checks
+        closes = self.df['Close'].values
+        dates_months = self.df['Date'].dt.month.values
+        
+        for row in self.df.itertuples():
+            i = row.Index
+            close_price = row.Close
+            
             if i in paydays_set:
                 cash += self.salary
                 total_invested += self.salary
                 amount = self.salary * 0.5
-                cash, shares = self._execute_buy(cash, shares, row['Close'], amount)
+                cash, shares = self._execute_buy(cash, shares, close_price, amount)
                 # FIX Bug 4: += to accumulate, not overwrite previous month's unspent half
                 pending_half += self.salary * 0.5
             
             # FIX Bug 1: Need i >= 3 for a true 3-consecutive-day check (4 data points)
             if pending_half > 0:
                 if i >= 3:
-                    if (self.df.iloc[i]['Close'] > self.df.iloc[i-1]['Close'] and 
-                        self.df.iloc[i-1]['Close'] > self.df.iloc[i-2]['Close'] and
-                        self.df.iloc[i-2]['Close'] > self.df.iloc[i-3]['Close']):
-                        cash, shares = self._execute_buy(cash, shares, row['Close'], pending_half)
+                    if (closes[i] > closes[i-1] and 
+                        closes[i-1] > closes[i-2] and
+                        closes[i-2] > closes[i-3]):
+                        cash, shares = self._execute_buy(cash, shares, close_price, pending_half)
                         pending_half = 0
                 
-                if pending_half > 0 and (i + 1 < len(self.df) and self.df.iloc[i+1]['Date'].month != row['Date'].month):
-                    cash, shares = self._execute_buy(cash, shares, row['Close'], pending_half)
+                if pending_half > 0 and (i + 1 < len(self.df) and dates_months[i+1] != dates_months[i]):
+                    cash, shares = self._execute_buy(cash, shares, close_price, pending_half)
                     pending_half = 0
 
-            equity = cash + shares * row['Close']
+            equity = cash + shares * close_price
             equity_curve.append(equity)
             shares_curve.append(shares)
             cash_curve.append(cash)
@@ -243,7 +264,13 @@ class BacktestEngine:
         shares_curve = []
         cash_curve = []
         
-        for i, row in self.df.iterrows():
+        k_vals = self.df['K'].values
+        d_vals = self.df['D'].values
+        macd_hist_vals = self.df['MACD_Hist'].values
+        
+        for row in self.df.itertuples():
+            i = row.Index
+            close_price = row.Close
             if i in paydays_set:
                 cash += self.salary
                 total_invested += self.salary
@@ -253,17 +280,15 @@ class BacktestEngine:
             # New Logic: Trigger on EITHER a KD golden cross in the low/mid zone (early reversal) 
             # OR a MACD histogram zero-crossover (trend confirmation).
             if i > 0:
-                prev = self.df.iloc[i-1]
-                
-                kd_golden_cross = (row['K'] > row['D']) and (prev['K'] <= prev['D']) and (row['K'] < 50)
-                macd_zero_cross = (row['MACD_Hist'] > 0) and (prev['MACD_Hist'] <= 0)
+                kd_golden_cross = (k_vals[i] > d_vals[i]) and (k_vals[i-1] <= d_vals[i-1]) and (k_vals[i] < 50)
+                macd_zero_cross = (macd_hist_vals[i] > 0) and (macd_hist_vals[i-1] <= 0)
                 
                 if kd_golden_cross or macd_zero_cross:
                     # Deploy 20% of current cash per signal (up to 5 tranches)
                     amount = cash * 0.2
-                    cash, shares = self._execute_buy(cash, shares, row['Close'], amount)
+                    cash, shares = self._execute_buy(cash, shares, close_price, amount)
 
-            equity = cash + shares * row['Close']
+            equity = cash + shares * close_price
             equity_curve.append(equity)
             shares_curve.append(shares)
             cash_curve.append(cash)
@@ -282,39 +307,49 @@ class BacktestEngine:
         cash_curve = []
         hist_peak = 0
         
-        for i, row in self.df.iterrows():
+        sma5_vals = self.df['SMA5'].values
+        sma20_vals = self.df['SMA20'].values
+        
+        for row in self.df.itertuples():
+            i = row.Index
+            close_price = row.Close
+            
             if i in paydays_set:
                 cash += self.salary
                 total_invested += self.salary
             
-            hist_peak = max(hist_peak, row['Close'])
+            hist_peak = max(hist_peak, close_price)
             
             # Big Dip logic: all-in when price drops X% from historical peak
-            if row['Close'] <= hist_peak * (1 - self.bs_threshold):
-                cash, shares = self._execute_buy(cash, shares, row['Close'], cash)
+            if close_price <= hist_peak * (1 - self.bs_threshold):
+                cash, shares = self._execute_buy(cash, shares, close_price, cash)
             
             # FIX Bug 3: Guard i > 0 and check NaN before SMA crossover comparison
             # Short term pool: 15% of cash, trade on SMA5/SMA20 crossover
             if i > 0:
-                prev = self.df.iloc[i-1]
-                sma5_ok = pd.notna(row['SMA5']) and pd.notna(prev['SMA5'])
-                sma20_ok = pd.notna(row['SMA20']) and pd.notna(prev['SMA20'])
+                sma5_now = sma5_vals[i]
+                sma5_prev = sma5_vals[i-1]
+                sma20_now = sma20_vals[i]
+                sma20_prev = sma20_vals[i-1]
+                
+                sma5_ok = not np.isnan(sma5_now) and not np.isnan(sma5_prev)
+                sma20_ok = not np.isnan(sma20_now) and not np.isnan(sma20_prev)
                 
                 if sma5_ok and sma20_ok:
                     # Golden cross: SMA5 crosses above SMA20
-                    if row['SMA5'] > row['SMA20'] and prev['SMA5'] <= prev['SMA20']:
+                    if sma5_now > sma20_now and sma5_prev <= sma20_prev:
                         amount = cash * 0.15
-                        cash, short_term_shares = self._execute_buy(cash, short_term_shares, row['Close'], amount)
+                        cash, short_term_shares = self._execute_buy(cash, short_term_shares, close_price, amount)
                     # Death cross: SMA5 crosses below SMA20 — sell all short-term
-                    elif row['SMA5'] < row['SMA20'] and prev['SMA5'] >= prev['SMA20']:
+                    elif sma5_now < sma20_now and sma5_prev >= sma20_prev:
                         if short_term_shares > 0:
-                            sell_value = short_term_shares * row['Close']
+                            sell_value = short_term_shares * close_price
                             sell_fee = sell_value * self.fee_rate
                             sell_tax = sell_value * self.tax_rate
                             cash += (sell_value - sell_fee - sell_tax)
                             short_term_shares = 0
 
-            equity = cash + (shares + short_term_shares) * row['Close']
+            equity = cash + (shares + short_term_shares) * close_price
             equity_curve.append(equity)
             equity_curve_shares = shares + short_term_shares
             shares_curve.append(equity_curve_shares)

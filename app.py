@@ -65,16 +65,52 @@ st.markdown("""
 st.title("🚀 0050 投資策略深度回測大賽")
 st.markdown("---")
 
+# Major Market Events History
+HISTORICAL_EVENTS = [
+    {"Date": "2011-08-05", "Event": "美債降評 & 歐債危機", "Story": "標普調降美國 AAA 評等，引發全球金融市場動盪與歐債問題。"},
+    {"Date": "2015-08-24", "Event": "陸股崩盤全球股災", "Story": "陸股跌停板限制失效引發 Panic Sell，台股當日盤中重挫近 600 點。"},
+    {"Date": "2018-10-11", "Event": "中美貿易戰恐慌", "Story": "貿易關係極度惡化，債券殖利率飆升導致恐慌性拋售，台股跌破萬點。"},
+    {"Date": "2020-03-12", "Event": "COVID-19 全球大流行", "Story": "WHO 宣佈大流行，全球同步進入熊市並觸發多次熔斷機制。"},
+    {"Date": "2022-02-24", "Event": "俄烏戰爭爆發", "Story": "俄羅斯入侵烏克蘭，引發全球能源通膨與避險資金撤離風險市場。"},
+    {"Date": "2024-04-19", "Event": "地緣政治與升息恐懼", "Story": "中東局勢緊張加上通膨數據黏著，台股盤中創下史上最大點數跌幅(1009點)。"}
+]
+
 # Sidebar
 st.sidebar.header("⚙️ 模擬參數設定")
+
+csv_file = "0050_historical_adj.csv"
+
+# Pre-load to determine date bounds for slider
+@st.cache_data
+def get_date_bounds(path):
+    temp_df = pd.read_csv(path)
+    temp_df['Date'] = pd.to_datetime(temp_df['Date'])
+    return temp_df['Date'].min().to_pydatetime(), temp_df['Date'].max().to_pydatetime()
+
+min_dt, max_dt = get_date_bounds(csv_file)
+
+st.sidebar.subheader("📅 回測時間範圍")
+date_range = st.sidebar.slider(
+    "選擇區間 (不只是縮放，會重新計算回測)",
+    min_value=min_dt,
+    max_value=max_dt,
+    value=(min_dt, max_dt),
+    format="YYYY/MM/DD"
+)
+
 salary = st.sidebar.number_input("每月投入金額 (月薪)", value=5000, step=1000, help="每個月發薪日會投入的閒置資金")
 payday = st.sidebar.slider("發薪日 (每月)", 1, 28, 5, help="每個月資金到帳的日期")
 bs_threshold = st.sidebar.slider("黑天鵝觸發門檻 (%)", 1, 50, 10, help="價格從歷史高點回落多少百分比時觸發大舉買入") / 100
 
-csv_file = "0050_historical_adj.csv"
-
 with st.spinner("回測計算中，請稍候..."):
-    engine = BacktestEngine(csv_file, monthly_salary=salary, payday=payday, black_swan_threshold=bs_threshold)
+    engine = BacktestEngine(
+        csv_file, 
+        monthly_salary=salary, 
+        payday=payday, 
+        black_swan_threshold=bs_threshold,
+        start_date=date_range[0],
+        end_date=date_range[1]
+    )
     all_results = engine.run_all()
 dates = engine.df['Date'].dt.strftime('%Y年%m月%d日')
 
@@ -132,15 +168,39 @@ with tab_p:
     fig_k.add_trace(go.Scatter(x=dates, y=df_price['SMA20'], name="SMA20", line=dict(color='rgba(218,165,32,0.6)', width=1.2)))
     fig_k.add_trace(go.Scatter(x=dates, y=df_price['SMA60'], name="SMA60", line=dict(color='rgba(199,21,133,0.6)', width=1.5)))
 
+    # Historical Event Markers
+    event_dates_dt = pd.to_datetime([e['Date'] for e in HISTORICAL_EVENTS])
+    df_events = df_price[df_price['Date'].isin(event_dates_dt)]
+    
+    if not df_events.empty:
+        # Match each row in df_events back to its title/story to prevent mapping errors
+        event_dict = {e['Date']: e for e in HISTORICAL_EVENTS}
+        hover_texts = []
+        for d in df_events['Date'].dt.strftime('%Y-%m-%d'):
+            if d in event_dict:
+                hover_texts.append(f"<b>{event_dict[d]['Event']}</b><br>{event_dict[d]['Story']}")
+        
+        fig_k.add_trace(go.Scatter(
+            x=df_events['Date'].dt.strftime('%Y年%m月%d日'),
+            y=df_events['High'] * 1.03,
+            mode='markers+text',
+            name="重大歷史事件",
+            marker=dict(symbol='triangle-down', size=15, color='#e67e22', line=dict(width=1, color='white')),
+            text=['⚠️'] * len(df_events),
+            textposition='top center',
+            hovertext=hover_texts,
+            hoverinfo='text'
+        ))
+
     fig_k.update_layout(
-        title="0050 還原股價走勢圖",
+        title="0050 還原股價走勢圖 (包含歷史重大事件標記)",
         yaxis_title="價格 (TWD)",
         height=1200,
         hovermode='x unified',
         template="plotly_white", # Default to professional Light template
         xaxis=dict(
             type='category',
-            rangeslider=dict(visible=True),
+            rangeslider=dict(visible=False),
             tickangle=-45
         )
     )
@@ -179,7 +239,7 @@ with tab_v:
         hovermode='x unified',
         height=1200,
         template="plotly_white",
-        xaxis=dict(type='category', rangeslider=dict(visible=True), tickangle=-45)
+        xaxis=dict(type='category', rangeslider=dict(visible=False), tickangle=-45)
     )
 
     fig_v.update_yaxes(title_text="資產價值 (TWD)", secondary_y=False)
